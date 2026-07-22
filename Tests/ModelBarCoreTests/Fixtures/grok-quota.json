@@ -1,0 +1,14 @@
+[
+  {
+    "source": "grok-web",
+    "usage": {
+      "primary": {
+        "resetsAt": "2026-07-23T20:27:20Z",
+        "usedPercent": 32
+      },
+      "secondary": null,
+      "extraRateWindows": null
+    },
+    "status": null
+  }
+]

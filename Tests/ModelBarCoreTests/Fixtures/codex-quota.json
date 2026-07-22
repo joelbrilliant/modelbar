@@ -1,0 +1,28 @@
+[
+  {
+    "source": "oauth",
+    "usage": {
+      "primary": null,
+      "secondary": {
+        "resetsAt": "2026-07-25T04:39:52Z",
+        "windowMinutes": 10080,
+        "usedPercent": 50
+      },
+      "extraRateWindows": [
+        {
+          "title": "Codex Spark Weekly",
+          "window": {
+            "usedPercent": 12,
+            "resetsAt": "2026-07-27T09:18:47Z",
+            "windowMinutes": 10080
+          }
+        }
+      ]
+    },
+    "status": {
+      "indicator": "none",
+      "description": "All Systems Operational",
+      "url": "https://status.openai.com/"
+    }
+  }
+]

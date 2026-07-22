@@ -1,0 +1,23 @@
+[
+  {
+    "source": "web",
+    "usage": {
+      "primary": {
+        "resetsAt": "2026-07-20T13:59:59Z",
+        "windowMinutes": 300,
+        "usedPercent": 24
+      },
+      "secondary": {
+        "resetsAt": "2026-07-25T07:59:59Z",
+        "windowMinutes": 10080,
+        "usedPercent": 10
+      },
+      "extraRateWindows": []
+    },
+    "status": {
+      "indicator": "minor",
+      "description": "Partially Degraded Service",
+      "url": "https://status.claude.com/"
+    }
+  }
+]
