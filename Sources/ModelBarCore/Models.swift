@@ -166,6 +166,17 @@ public struct ProviderSnapshot: Codable, Equatable, Sendable {
     public var highestUsedPercent: Double? {
         quotaWindows.map(\.usedPercent).max()
     }
+
+    /// The window with the least remaining capacity. Ties keep the first
+    /// window in provider order.
+    public var tightestQuotaWindow: QuotaWindow? {
+        quotaWindows.reduce(nil) { tightest, window in
+            guard let tightest, tightest.remainingPercent <= window.remainingPercent else {
+                return window
+            }
+            return tightest
+        }
+    }
 }
 
 public struct AgentTokenSnapshot: Codable, Equatable, Sendable {

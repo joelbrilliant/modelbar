@@ -6,6 +6,7 @@ It ships with OpenAI, Claude and Grok adapters. Forks can add any provider that 
 
 ## What it shows
 
+- a menu bar gauge and percentage left for each enabled provider, based on its tightest quota window
 - quota windows with percentage remaining and reset time
 - local token totals for today or the last 24 hours and seven days
 - provider service status when a reliable source exists

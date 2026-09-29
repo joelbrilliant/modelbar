@@ -27,7 +27,13 @@ public enum DisplayFormatting {
     }
 
     public static func percent(_ value: Double) -> String {
-        String(format: "%.0f%%", min(100, max(0, value)))
+        "\(percentNumber(value))%"
+    }
+
+    /// Whole-number percentage without a percent sign. `percent` appends
+    /// the sign to this value so every surface rounds identically.
+    public static func percentNumber(_ value: Double) -> String {
+        String(format: "%.0f", min(100, max(0, value)))
     }
 
     public static func reset(_ date: Date?, now: Date = Date()) -> String {
@@ -45,6 +51,52 @@ public enum DisplayFormatting {
             return "resets in \(max(1, Int(ceil(seconds / 3_600))))h"
         }
         return "resets in \(max(1, Int(ceil(seconds / 86_400))))d"
+    }
+
+    /// Reset time as an absolute clock time, for text that can sit on screen
+    /// long after it was built (the status item tooltip). Unlike `reset`,
+    /// it stays true however much later it is read.
+    public static func resetClock(
+        _ date: Date?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        guard let date else {
+            return "reset unknown"
+        }
+        if date <= now {
+            return "reset due"
+        }
+        return "resets \(clockTime(date, now: now, calendar: calendar))"
+    }
+
+    /// Absolute time of day, with a weekday when `date` is on another
+    /// calendar day within the next week and a day and month beyond that.
+    public static func clockTime(
+        _ date: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = calendar.locale ?? .current
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: now),
+            to: calendar.startOfDay(for: date)
+        ).day ?? 0
+        let template: String
+        switch days {
+        case 0:
+            template = "jmm"
+        case 1...6:
+            template = "EEEjmm"
+        default:
+            template = "dMMMjmm"
+        }
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
     }
 
     public static func age(since date: Date, now: Date = Date()) -> String {

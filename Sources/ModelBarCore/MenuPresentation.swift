@@ -1,7 +1,11 @@
 import Foundation
 
 public struct MenuPresentation: Equatable, Sendable {
+    /// Plain-text fallback for the status item: segment values joined by
+    /// single spaces, or "?" when no enabled provider has data yet.
     public let statusTitle: String
+    public let statusSegments: [StatusSegmentPresentation]
+    public let statusToolTip: String
     public let accessibilityLabel: String
     public let providerRows: [MenuPresentationRow]
     public let providerCards: [ProviderCardPresentation]
@@ -10,6 +14,8 @@ public struct MenuPresentation: Equatable, Sendable {
 
     public init(
         statusTitle: String,
+        statusSegments: [StatusSegmentPresentation],
+        statusToolTip: String,
         accessibilityLabel: String,
         providerRows: [MenuPresentationRow],
         providerCards: [ProviderCardPresentation],
@@ -17,6 +23,8 @@ public struct MenuPresentation: Equatable, Sendable {
         footer: String
     ) {
         self.statusTitle = statusTitle
+        self.statusSegments = statusSegments
+        self.statusToolTip = statusToolTip
         self.accessibilityLabel = accessibilityLabel
         self.providerRows = providerRows
         self.providerCards = providerCards
@@ -29,6 +37,52 @@ public enum QuotaCapacityState: Equatable, Sendable {
     case healthy
     case low
     case critical
+
+    public init(remainingPercent: Double) {
+        switch remainingPercent {
+        case ...10:
+            self = .critical
+        case ...20:
+            self = .low
+        default:
+            self = .healthy
+        }
+    }
+}
+
+/// One provider's segment in the closed status item: its tightest quota
+/// window expressed as percentage left.
+public struct StatusSegmentPresentation: Equatable, Sendable {
+    public static let unavailableText = "\u{2013}"
+
+    public let id: String
+    public let displayName: String
+    public let brand: ProviderBrand?
+    public let windowName: String?
+    public let remainingFraction: Double?
+    public let valueText: String
+    public let capacityState: QuotaCapacityState?
+    public let isStale: Bool
+
+    public init(
+        id: String,
+        displayName: String,
+        brand: ProviderBrand?,
+        windowName: String?,
+        remainingFraction: Double?,
+        valueText: String,
+        capacityState: QuotaCapacityState?,
+        isStale: Bool
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.brand = brand
+        self.windowName = windowName
+        self.remainingFraction = remainingFraction
+        self.valueText = valueText
+        self.capacityState = capacityState
+        self.isStale = isStale
+    }
 }
 
 public struct QuotaBarPresentation: Equatable, Sendable {
@@ -43,14 +97,7 @@ public struct QuotaBarPresentation: Equatable, Sendable {
         remainingFraction = window.remainingPercent / 100
         leftText = "\(DisplayFormatting.percent(window.remainingPercent)) left"
         resetText = DisplayFormatting.reset(window.resetsAt, now: now)
-        switch window.remainingPercent {
-        case ...10:
-            capacityState = .critical
-        case ...20:
-            capacityState = .low
-        default:
-            capacityState = .healthy
-        }
+        capacityState = QuotaCapacityState(remainingPercent: window.remainingPercent)
     }
 }
 
@@ -78,10 +125,16 @@ public struct MenuPresentationRow: Equatable, Sendable {
 }
 
 public enum MenuPresentationBuilder {
+    /// Shown when no enabled provider is in the snapshot yet. Settings and
+    /// launch keep at least one provider enabled, so an empty list means
+    /// newly enabled providers have not been fetched, not that none are on.
+    public static let waitingForProviderDataText = "Waiting for provider data"
+
     public static func build(
         snapshot: ModelBarSnapshot,
         now: Date = Date(),
-        preferences: ModelBarPreferences = ModelBarPreferences()
+        preferences: ModelBarPreferences = ModelBarPreferences(),
+        calendar: Calendar = .current
     ) -> MenuPresentation {
         let visibleProviders = snapshot.providers.filter {
             preferences.isProviderEnabled($0.id)
@@ -89,11 +142,10 @@ public enum MenuPresentationBuilder {
         let visibleAgents = snapshot.agents.filter {
             preferences.isAgentVisible($0.id)
         }
-        let highest = visibleProviders.compactMap(\.highestUsedPercent).max()
-        let statusTitle = highest.map(DisplayFormatting.percent) ?? "?"
         let hasIssues = visibleProviders.contains { $0.issue != nil } ||
             visibleAgents.contains { $0.issue != nil }
-        let stale = now.timeIntervalSince(snapshot.refreshedAt) > 1_800 ||
+        let ageStale = now.timeIntervalSince(snapshot.refreshedAt) > 1_800
+        let stale = ageStale ||
             visibleProviders.contains { $0.isStale } ||
             visibleAgents.contains { $0.isStale }
         let state: String
@@ -114,9 +166,29 @@ public enum MenuPresentationBuilder {
             footerPrefix = "Updated"
         }
 
+        let footer = "\(footerPrefix) \(DisplayFormatting.age(since: snapshot.refreshedAt, now: now))"
+        // Segments are stale only through their own provider or snapshot
+        // age, never because another provider or a Hermes agent is stale,
+        // so dimming shows which provider is out of date.
+        let segments = visibleProviders.map {
+            statusSegment(provider: $0, snapshotAgeIsStale: ageStale)
+        }
+        let statusTitle = segments.isEmpty
+            ? "?"
+            : segments.map(\.valueText).joined(separator: " ")
+
         return MenuPresentation(
             statusTitle: statusTitle,
-            accessibilityLabel: "Highest model quota usage \(statusTitle), \(state)",
+            statusSegments: segments,
+            statusToolTip: statusToolTip(
+                providers: visibleProviders,
+                segments: segments,
+                footer: "\(toolTipFooterPrefix(hasIssues: hasIssues, stale: stale)) " +
+                    DisplayFormatting.clockTime(snapshot.refreshedAt, now: now, calendar: calendar),
+                now: now,
+                calendar: calendar
+            ),
+            accessibilityLabel: statusAccessibilityLabel(segments: segments, state: state),
             providerRows: visibleProviders.flatMap {
                 providerRows(provider: $0, stale: stale, now: now)
             },
@@ -126,8 +198,103 @@ public enum MenuPresentationBuilder {
             agentRows: visibleAgents.isEmpty
                 ? [MenuPresentationRow(title: "No Hermes profiles found")]
                 : visibleAgents.map { agentRow(agent: $0, stale: stale) },
-            footer: "\(footerPrefix) \(DisplayFormatting.age(since: snapshot.refreshedAt, now: now))"
+            footer: footer
         )
+    }
+
+    private static func statusSegment(
+        provider: ProviderSnapshot,
+        snapshotAgeIsStale: Bool
+    ) -> StatusSegmentPresentation {
+        let window = provider.tightestQuotaWindow
+        return StatusSegmentPresentation(
+            id: provider.id,
+            displayName: provider.displayName,
+            brand: provider.brand,
+            windowName: window?.name,
+            remainingFraction: window.map { $0.remainingPercent / 100 },
+            valueText: window.map { DisplayFormatting.percentNumber($0.remainingPercent) }
+                ?? StatusSegmentPresentation.unavailableText,
+            capacityState: window.map {
+                QuotaCapacityState(remainingPercent: $0.remainingPercent)
+            },
+            isStale: provider.isStale || snapshotAgeIsStale
+        )
+    }
+
+    /// The tooltip is a stored string that AppKit shows until the next
+    /// render, so it uses absolute times rather than "just now" or
+    /// "resets in 20m", which would go stale while the menu stays closed.
+    private static func toolTipFooterPrefix(hasIssues: Bool, stale: Bool) -> String {
+        if hasIssues {
+            return "Partial data from"
+        }
+        if stale {
+            return "Stale data from"
+        }
+        return "Updated"
+    }
+
+    private static func statusToolTip(
+        providers: [ProviderSnapshot],
+        segments: [StatusSegmentPresentation],
+        footer: String,
+        now: Date,
+        calendar: Calendar
+    ) -> String {
+        var lines = zip(providers, segments).map { provider, segment in
+            var parts = [segment.displayName]
+            if let window = provider.tightestQuotaWindow {
+                parts.append(window.name)
+                parts.append("\(DisplayFormatting.percent(window.remainingPercent)) left")
+                if window.resetsAt != nil {
+                    parts.append(DisplayFormatting.resetClock(
+                        window.resetsAt,
+                        now: now,
+                        calendar: calendar
+                    ))
+                }
+            } else {
+                parts.append("Quota unavailable")
+            }
+            if segment.isStale {
+                parts.append("stale")
+            }
+            return parts.joined(separator: " · ")
+        }
+        if lines.isEmpty {
+            lines.append(waitingForProviderDataText)
+        }
+        lines.append(footer)
+        return lines.joined(separator: "\n")
+    }
+
+    private static func statusAccessibilityLabel(
+        segments: [StatusSegmentPresentation],
+        state: String
+    ) -> String {
+        var sentences = ["Model quota left, \(state)."]
+        if segments.isEmpty {
+            sentences.append("\(waitingForProviderDataText).")
+        }
+        for segment in segments {
+            let staleSuffix = segment.isStale ? ", stale" : ""
+            guard let windowName = segment.windowName else {
+                sentences.append("\(segment.displayName), quota unavailable\(staleSuffix).")
+                continue
+            }
+            var sentence = "\(segment.displayName), \(windowName), \(segment.valueText)% left"
+            switch segment.capacityState {
+            case .critical:
+                sentence += ", critical"
+            case .low:
+                sentence += ", low"
+            case .healthy, nil:
+                break
+            }
+            sentences.append(sentence + staleSuffix + ".")
+        }
+        return sentences.joined(separator: " ")
     }
 
     private static func providerCard(
