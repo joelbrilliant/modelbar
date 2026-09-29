@@ -36,6 +36,30 @@ public enum DisplayFormatting {
         String(format: "%.0f", min(100, max(0, value)))
     }
 
+    /// Time left until `date` as a compact figure for one-line quota rows:
+    /// "42m", "3h 44m", "3d 13h". Whole units are floored, so it never
+    /// promises more time than remains.
+    public static func countdown(_ date: Date?, now: Date = Date()) -> String {
+        guard let date else {
+            return unavailableCountdown
+        }
+        if date <= now {
+            return "due"
+        }
+        let seconds = Int(date.timeIntervalSince(now))
+        let minutes = seconds / 60
+        if seconds < 3_600 {
+            return "\(max(1, minutes))m"
+        }
+        let hours = seconds / 3_600
+        if seconds < 86_400 {
+            return "\(hours)h \(minutes % 60)m"
+        }
+        return "\(hours / 24)d \(hours % 24)h"
+    }
+
+    public static let unavailableCountdown = "\u{2013}"
+
     public static func reset(_ date: Date?, now: Date = Date()) -> String {
         guard let date else {
             return "reset unknown"

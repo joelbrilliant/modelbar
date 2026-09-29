@@ -89,15 +89,26 @@ public struct QuotaBarPresentation: Equatable, Sendable {
     public let name: String
     public let remainingFraction: Double
     public let leftText: String
-    public let resetText: String
+    public let countdownText: String
+    public let accessibilityText: String
     public let capacityState: QuotaCapacityState
 
     public init(window: QuotaWindow, now: Date) {
         name = window.name
         remainingFraction = window.remainingPercent / 100
         leftText = "\(DisplayFormatting.percent(window.remainingPercent)) left"
-        resetText = DisplayFormatting.reset(window.resetsAt, now: now)
+        countdownText = DisplayFormatting.countdown(window.resetsAt, now: now)
         capacityState = QuotaCapacityState(remainingPercent: window.remainingPercent)
+
+        let resetPhrase: String
+        if window.resetsAt == nil {
+            resetPhrase = "reset time unknown"
+        } else if countdownText == "due" {
+            resetPhrase = "reset due"
+        } else {
+            resetPhrase = "resets in \(countdownText)"
+        }
+        accessibilityText = "\(window.name), \(leftText), \(resetPhrase)"
     }
 }
 
@@ -190,10 +201,10 @@ public enum MenuPresentationBuilder {
             ),
             accessibilityLabel: statusAccessibilityLabel(segments: segments, state: state),
             providerRows: visibleProviders.flatMap {
-                providerRows(provider: $0, stale: stale, now: now)
+                providerRows(provider: $0, stale: $0.isStale || ageStale, now: now)
             },
             providerCards: visibleProviders.map {
-                providerCard(provider: $0, snapshotIsStale: stale, now: now)
+                providerCard(provider: $0, snapshotAgeIsStale: ageStale, now: now)
             },
             agentRows: visibleAgents.isEmpty
                 ? [MenuPresentationRow(title: "No Hermes profiles found")]
@@ -299,7 +310,7 @@ public enum MenuPresentationBuilder {
 
     private static func providerCard(
         provider: ProviderSnapshot,
-        snapshotIsStale: Bool,
+        snapshotAgeIsStale: Bool,
         now: Date
     ) -> ProviderCardPresentation {
         let statusText: String
@@ -308,7 +319,7 @@ public enum MenuPresentationBuilder {
             statusText = statusLabel(serviceStatus)
             statusCondition = serviceStatus.condition
         } else {
-            statusText = "Service status unknown"
+            statusText = "Status unknown"
             statusCondition = .unknown
         }
 
@@ -322,7 +333,9 @@ public enum MenuPresentationBuilder {
             tokensText = nil
         }
 
-        let stale = provider.isStale || snapshotIsStale
+        // Per provider, like the status item: another provider or a Hermes
+        // agent going stale must not mark this card stale.
+        let stale = provider.isStale || snapshotAgeIsStale
         let agePrefix = stale ? "Stale" : "Updated"
         return ProviderCardPresentation(
             id: provider.id,
@@ -331,7 +344,7 @@ public enum MenuPresentationBuilder {
             statusText: statusText,
             statusCondition: statusCondition,
             ageText: "\(agePrefix) \(DisplayFormatting.age(since: provider.fetchedAt, now: now))",
-            quotaBars: provider.quotaWindows.map {
+            quotaBars: provider.displayedQuotaWindows.map {
                 QuotaBarPresentation(window: $0, now: now)
             },
             tokensText: tokensText,
@@ -349,12 +362,12 @@ public enum MenuPresentationBuilder {
         if let percent = provider.highestUsedPercent.map(DisplayFormatting.percent) {
             title += "  \(percent) used"
         }
-        if provider.isStale || stale {
+        if stale {
             title += "  stale"
         }
         var rows = [MenuPresentationRow(title: title)]
 
-        for window in provider.quotaWindows {
+        for window in provider.displayedQuotaWindows {
             let used = DisplayFormatting.percent(window.usedPercent)
             let remaining = DisplayFormatting.percent(window.remainingPercent)
             let reset = DisplayFormatting.reset(window.resetsAt, now: now)

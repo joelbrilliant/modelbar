@@ -16,7 +16,7 @@ final class ProviderCardView: NSView {
         let content = NSStackView()
         content.orientation = .vertical
         content.alignment = .leading
-        content.spacing = 5
+        content.spacing = 4
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
 
@@ -25,22 +25,25 @@ final class ProviderCardView: NSView {
         addSubview(accent)
 
         let contentWidth = Self.width - (Self.horizontalPadding * 2)
-        content.addArrangedSubview(
-            header(
-                title: presentation.displayName,
-                status: presentation.statusText,
-                condition: presentation.statusCondition,
-                brand: presentation.brand
-            )
+        let headerRow = header(
+            title: presentation.displayName,
+            status: presentation.statusText,
+            condition: presentation.statusCondition,
+            brand: presentation.brand
         )
-        content.addArrangedSubview(
-            label(
+        content.addArrangedSubview(headerRow)
+        content.setCustomSpacing(6, after: headerRow)
+
+        // Freshness is only worth a line when it is a problem.
+        if presentation.isStale {
+            let age = label(
                 presentation.ageText,
                 font: .systemFont(ofSize: 10),
                 colour: .secondaryLabelColor
             )
-        )
-        content.addArrangedSubview(separator())
+            content.addArrangedSubview(age)
+            content.setCustomSpacing(6, after: age)
+        }
 
         if presentation.quotaBars.isEmpty {
             content.addArrangedSubview(
@@ -55,32 +58,26 @@ final class ProviderCardView: NSView {
                 content.addArrangedSubview(
                     QuotaRowView(
                         presentation: quota,
-                        brand: presentation.brand
+                        brand: presentation.brand,
+                        isStale: presentation.isStale
                     )
                 )
             }
         }
 
         if let tokensText = presentation.tokensText {
-            content.addArrangedSubview(separator())
-            content.addArrangedSubview(
-                label(
-                    tokensText,
-                    font: .systemFont(ofSize: 11),
-                    colour: .labelColor
-                )
+            let tokens = label(
+                tokensText,
+                font: .systemFont(ofSize: 11),
+                colour: .secondaryLabelColor
             )
+            tokens.lineBreakMode = .byTruncatingTail
+            tokens.toolTip = tokensText
+            content.addArrangedSubview(tokens)
         }
 
         if let issueText = presentation.issueText {
-            let issue = label(
-                "⚠ \(issueText)",
-                font: .systemFont(ofSize: 11, weight: .medium),
-                colour: .systemRed
-            )
-            issue.maximumNumberOfLines = 2
-            issue.lineBreakMode = .byWordWrapping
-            content.addArrangedSubview(issue)
+            content.addArrangedSubview(issueLine(issueText))
         }
 
         NSLayoutConstraint.activate([
@@ -96,11 +93,15 @@ final class ProviderCardView: NSView {
 
         layoutSubtreeIfNeeded()
         let height = ceil(content.fittingSize.height) + 18
-        frame.size = NSSize(width: Self.width, height: max(80, height))
+        frame.size = NSSize(width: Self.width, height: height)
         setAccessibilityElement(true)
-        setAccessibilityLabel(
-            "\(presentation.displayName), \(presentation.statusText), \(presentation.ageText)"
-        )
+        // The age is only part of the label when it is a stale warning, so
+        // the label never claims an "Updated" freshness the data lacks.
+        var accessibilityParts = [presentation.displayName, presentation.statusText]
+        if presentation.isStale {
+            accessibilityParts.append(presentation.ageText)
+        }
+        setAccessibilityLabel(accessibilityParts.joined(separator: ", "))
     }
 
     @available(*, unavailable)
@@ -169,13 +170,44 @@ final class ProviderCardView: NSView {
         return row
     }
 
-    private func separator() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(equalToConstant: 336).isActive = true
-        box.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        return box
+    private func issueLine(_ text: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 5
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        let icon = NSImageView(
+            image: NSImage(
+                systemSymbolName: "exclamationmark.triangle",
+                accessibilityDescription: nil
+            )?.withSymbolConfiguration(symbolConfiguration) ?? NSImage()
+        )
+        icon.contentTintColor = .secondaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setAccessibilityElement(false)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            icon.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        row.addArrangedSubview(icon)
+
+        let message = NSTextField(wrappingLabelWithString: text)
+        message.font = .systemFont(ofSize: 11)
+        message.textColor = .secondaryLabelColor
+        message.maximumNumberOfLines = 2
+        message.lineBreakMode = .byWordWrapping
+        message.cell?.truncatesLastVisibleLine = true
+        message.preferredMaxLayoutWidth = Self.width - (Self.horizontalPadding * 2) - 18
+        message.toolTip = text
+        message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(message)
+
+        row.widthAnchor.constraint(
+            equalToConstant: Self.width - (Self.horizontalPadding * 2)
+        ).isActive = true
+        return row
     }
 
     private func label(
@@ -228,90 +260,135 @@ private final class ProviderAccentView: NSView {
     }
 }
 
+/// One quota window on one line: name, bar, "N% left" and reset countdown.
+/// The name, percentage and countdown sit in fixed columns so they line up
+/// across every row in the card.
 @MainActor
 private final class QuotaRowView: NSView {
     private static let width: CGFloat = 336
+    private static let height: CGFloat = 18
+    private static let columnGap: CGFloat = 8
+    private static let nameColumnWidth: CGFloat = 84
+    private static let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    private static let leftColumnWidth = columnWidth(for: "100% left")
+    private static let countdownColumnWidth = columnWidth(for: "23h 59m")
 
-    init(presentation: QuotaBarPresentation, brand: ProviderBrand?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: 42))
+    init(presentation: QuotaBarPresentation, brand: ProviderBrand?, isStale: Bool) {
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
 
         let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = Self.columnGap
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
-        let name = NSTextField(labelWithString: presentation.name)
-        name.font = .systemFont(ofSize: 11, weight: .medium)
+        let textColour: NSColor = isStale ? .secondaryLabelColor : .labelColor
+        let name = Self.column(
+            presentation.name,
+            font: .systemFont(ofSize: 11),
+            colour: textColour,
+            width: Self.nameColumnWidth,
+            alignment: .left
+        )
+        name.toolTip = presentation.name
         stack.addArrangedSubview(name)
 
         let bar = QuotaTrackView(
             fraction: presentation.remainingFraction,
             capacityState: presentation.capacityState,
-            brand: brand
-        )
-        bar.setAccessibilityLabel(
-            "\(presentation.name), \(presentation.leftText), \(presentation.resetText)"
+            brand: brand,
+            isStale: isStale
         )
         stack.addArrangedSubview(bar)
 
-        let detail = NSStackView()
-        detail.orientation = .horizontal
-        detail.alignment = .centerY
-
-        let left = NSTextField(labelWithString: presentation.leftText)
-        left.font = .systemFont(ofSize: 10, weight: .medium)
-        left.textColor = ProviderBrandStyle.capacityColour(
-            for: presentation.capacityState,
-            brand: brand
-        )
-        detail.addArrangedSubview(left)
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        detail.addArrangedSubview(spacer)
-
-        let reset = NSTextField(labelWithString: presentation.resetText)
-        reset.font = .systemFont(ofSize: 10)
-        reset.textColor = .secondaryLabelColor
-        detail.addArrangedSubview(reset)
-        stack.addArrangedSubview(detail)
+        stack.addArrangedSubview(Self.column(
+            presentation.leftText,
+            font: Self.numberFont,
+            colour: textColour,
+            width: Self.leftColumnWidth,
+            alignment: .right
+        ))
+        stack.addArrangedSubview(Self.column(
+            presentation.countdownText,
+            font: Self.numberFont,
+            colour: .secondaryLabelColor,
+            width: Self.countdownColumnWidth,
+            alignment: .right
+        ))
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: Self.width),
-            heightAnchor.constraint(equalToConstant: 42),
+            heightAnchor.constraint(equalToConstant: Self.height),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            bar.widthAnchor.constraint(equalToConstant: Self.width),
-            detail.widthAnchor.constraint(equalToConstant: Self.width),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        // The row reads as one element so VoiceOver speaks the window, the
+        // percentage and the reset together instead of four fragments.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+        setAccessibilityLabel(presentation.accessibilityText)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
     }
+
+    private static func columnWidth(for sample: String) -> CGFloat {
+        ceil(NSAttributedString(
+            string: sample,
+            attributes: [.font: numberFont]
+        ).size().width) + 1
+    }
+
+    private static func column(
+        _ text: String,
+        font: NSFont,
+        colour: NSColor,
+        width: CGFloat,
+        alignment: NSTextAlignment
+    ) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = font
+        field.textColor = colour
+        field.alignment = alignment
+        field.lineBreakMode = .byTruncatingTail
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: width).isActive = true
+        field.setAccessibilityElement(false)
+        return field
+    }
 }
 
 @MainActor
 private final class QuotaTrackView: NSView {
+    private static let height: CGFloat = 6
+    private static let staleFillAlpha: CGFloat = 0.4
+
     private let fraction: CGFloat
     private let capacityState: QuotaCapacityState
     private let brand: ProviderBrand?
+    private let isStale: Bool
 
     init(
         fraction: Double,
         capacityState: QuotaCapacityState,
-        brand: ProviderBrand?
+        brand: ProviderBrand?,
+        isStale: Bool
     ) {
         self.fraction = CGFloat(min(1, max(0, fraction)))
         self.capacityState = capacityState
         self.brand = brand
-        super.init(frame: NSRect(x: 0, y: 0, width: 336, height: 7))
-        setAccessibilityElement(true)
-        setAccessibilityValue("\(Int(round(fraction * 100))) percent remaining")
+        self.isStale = isStale
+        super.init(frame: NSRect(x: 0, y: 0, width: 100, height: Self.height))
+        translatesAutoresizingMaskIntoConstraints = false
+        setContentHuggingPriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        heightAnchor.constraint(equalToConstant: Self.height).isActive = true
+        setAccessibilityElement(false)
     }
 
     @available(*, unavailable)
@@ -320,26 +397,29 @@ private final class QuotaTrackView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: 7)
+        NSSize(width: NSView.noIntrinsicMetric, height: Self.height)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let track = bounds.insetBy(dx: 0, dy: 1)
-        let radius = track.height / 2
+        let radius = bounds.height / 2
         NSColor.quaternaryLabelColor.setFill()
-        NSBezierPath(roundedRect: track, xRadius: radius, yRadius: radius).fill()
+        NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
 
         guard fraction > 0 else {
             return
         }
         let fillRect = NSRect(
-            x: track.minX,
-            y: track.minY,
-            width: max(track.height, track.width * fraction),
-            height: track.height
+            x: bounds.minX,
+            y: bounds.minY,
+            width: max(bounds.height, bounds.width * fraction),
+            height: bounds.height
         )
-        ProviderBrandStyle.capacityColour(for: capacityState, brand: brand).setFill()
+        var fill = ProviderBrandStyle.capacityColour(for: capacityState, brand: brand)
+        if isStale {
+            fill = fill.withAlphaComponent(Self.staleFillAlpha)
+        }
+        fill.setFill()
         NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius).fill()
     }
 }

@@ -33,6 +33,12 @@ public struct QuotaWindow: Codable, Equatable, Sendable {
     public var remainingPercent: Double {
         100 - usedPercent
     }
+
+    /// A window that has never been used and has no reset time. The menu
+    /// hides these; a 0%-used window that carries a reset time is real.
+    public var isUnused: Bool {
+        usedPercent == 0 && resetsAt == nil
+    }
 }
 
 public struct TokenUsage: Codable, Equatable, Sendable {
@@ -167,6 +173,14 @@ public struct ProviderSnapshot: Codable, Equatable, Sendable {
         quotaWindows.map(\.usedPercent).max()
     }
 
+    /// Windows the menu lists: unused windows are hidden unless every window
+    /// is unused, so a provider never shows an empty card that reads as
+    /// unavailable.
+    public var displayedQuotaWindows: [QuotaWindow] {
+        let used = quotaWindows.filter { !$0.isUnused }
+        return used.isEmpty ? quotaWindows : used
+    }
+
     /// The window with the least remaining capacity. Ties keep the first
     /// window in provider order.
     public var tightestQuotaWindow: QuotaWindow? {
@@ -276,8 +290,15 @@ public enum SnapshotMerger {
                 return current
             }
             var merged = current
-            if merged.quotaWindows.isEmpty {
+            // Only quota taken from the cache makes a provider stale. Tokens
+            // and service status may be backfilled while fresh quota stays
+            // fresh, and the issue text keeps the failed source visible.
+            if merged.quotaWindows.isEmpty, !cached.quotaWindows.isEmpty {
                 merged.quotaWindows = cached.quotaWindows
+                // The quota is only as old as the refresh that produced it,
+                // so repeated failures must not reset the displayed age.
+                merged.fetchedAt = cached.fetchedAt
+                merged.isStale = true
             }
             if merged.tokens == nil {
                 merged.tokens = cached.tokens
@@ -285,7 +306,6 @@ public enum SnapshotMerger {
             if merged.serviceStatus == nil, cached.serviceStatus != nil {
                 merged.serviceStatus = cached.serviceStatus
             }
-            merged.isStale = true
             return merged
         }
 
