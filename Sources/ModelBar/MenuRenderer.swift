@@ -7,6 +7,7 @@ final class MenuRenderer {
     private let menu: NSMenu
     private weak var refreshItem: NSMenuItem?
     private var isRefreshing = false
+    private var displayedStatusSegments: [StatusSegmentPresentation]?
 
     init(statusItem: NSStatusItem, menu: NSMenu) {
         self.statusItem = statusItem
@@ -21,7 +22,11 @@ final class MenuRenderer {
         quitTarget: AnyObject,
         quitAction: Selector
     ) {
-        configureStatusButton(title: "…", accessibilityLabel: "Model usage loading")
+        configureSymbolStatusButton(
+            title: "…",
+            accessibilityLabel: "Model usage loading",
+            toolTip: nil
+        )
         menu.removeAllItems()
         menu.addItem(sectionHeader("ModelBar"))
         menu.addItem(readOnlyItem("Loading usage…"))
@@ -49,10 +54,7 @@ final class MenuRenderer {
             snapshot: snapshot,
             preferences: preferences
         )
-        configureStatusButton(
-            title: presentation.statusTitle,
-            accessibilityLabel: presentation.accessibilityLabel
-        )
+        configureStatusButton(presentation)
 
         menu.removeAllItems()
         menu.addItem(readOnlyItem("Open ModelBar to view usage"))
@@ -81,15 +83,12 @@ final class MenuRenderer {
             snapshot: snapshot,
             preferences: preferences
         )
-        configureStatusButton(
-            title: presentation.statusTitle,
-            accessibilityLabel: presentation.accessibilityLabel
-        )
+        configureStatusButton(presentation)
 
         menu.removeAllItems()
         menu.addItem(sectionHeader("Providers"))
         if presentation.providerCards.isEmpty {
-            menu.addItem(readOnlyItem("No providers enabled"))
+            menu.addItem(readOnlyItem(MenuPresentationBuilder.waitingForProviderDataText))
         } else {
             for card in presentation.providerCards {
                 menu.addItem(providerCardItem(card))
@@ -157,7 +156,36 @@ final class MenuRenderer {
         menu.addItem(quit)
     }
 
-    private func configureStatusButton(title: String, accessibilityLabel: String) {
+    private func configureStatusButton(_ presentation: MenuPresentation) {
+        guard !presentation.statusSegments.isEmpty else {
+            configureSymbolStatusButton(
+                title: presentation.statusTitle,
+                accessibilityLabel: presentation.accessibilityLabel,
+                toolTip: presentation.statusToolTip
+            )
+            return
+        }
+        guard let button = statusItem.button else {
+            return
+        }
+        if displayedStatusSegments != presentation.statusSegments {
+            button.image = StatusItemImage.make(
+                segments: presentation.statusSegments,
+                appearanceSource: button
+            )
+            button.imagePosition = .imageOnly
+            button.title = ""
+            displayedStatusSegments = presentation.statusSegments
+        }
+        button.toolTip = presentation.statusToolTip
+        button.setAccessibilityLabel(presentation.accessibilityLabel)
+    }
+
+    private func configureSymbolStatusButton(
+        title: String,
+        accessibilityLabel: String,
+        toolTip: String?
+    ) {
         guard let button = statusItem.button else {
             return
         }
@@ -167,7 +195,9 @@ final class MenuRenderer {
         )
         button.imagePosition = .imageLeading
         button.title = " \(title)"
+        button.toolTip = toolTip
         button.setAccessibilityLabel(accessibilityLabel)
+        displayedStatusSegments = nil
     }
 
     private func sectionHeader(_ title: String) -> NSMenuItem {

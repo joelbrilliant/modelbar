@@ -262,7 +262,7 @@ private final class QuotaRowView: NSView {
 
         let left = NSTextField(labelWithString: presentation.leftText)
         left.font = .systemFont(ofSize: 10, weight: .medium)
-        left.textColor = detailColour(
+        left.textColor = ProviderBrandStyle.capacityColour(
             for: presentation.capacityState,
             brand: brand
         )
@@ -292,20 +292,6 @@ private final class QuotaRowView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
-    }
-
-    private func detailColour(
-        for state: QuotaCapacityState,
-        brand: ProviderBrand?
-    ) -> NSColor {
-        switch state {
-        case .healthy:
-            return ProviderBrandStyle.colour(for: brand)
-        case .low:
-            return .systemOrange
-        case .critical:
-            return .systemRed
-        }
     }
 }
 
@@ -353,19 +339,8 @@ private final class QuotaTrackView: NSView {
             width: max(track.height, track.width * fraction),
             height: track.height
         )
-        fillColour.setFill()
+        ProviderBrandStyle.capacityColour(for: capacityState, brand: brand).setFill()
         NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius).fill()
-    }
-
-    private var fillColour: NSColor {
-        switch capacityState {
-        case .healthy:
-            return ProviderBrandStyle.colour(for: brand)
-        case .low:
-            return .systemOrange
-        case .critical:
-            return .systemRed
-        }
     }
 }
 

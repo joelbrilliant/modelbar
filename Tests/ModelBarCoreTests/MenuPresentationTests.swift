@@ -58,7 +58,7 @@ final class MenuPresentationTests: XCTestCase {
         let providerTitles = presentation.providerRows.map(\.title)
         let agentTitles = presentation.agentRows.map(\.title)
 
-        XCTAssertEqual(presentation.statusTitle, "50%")
+        XCTAssertEqual(presentation.statusTitle, "50 68")
         XCTAssertEqual(presentation.providerCards.count, 2)
         XCTAssertEqual(presentation.providerCards[0].brand, .openAI)
         XCTAssertEqual(presentation.providerCards[1].brand, .grok)
@@ -180,7 +180,7 @@ final class MenuPresentationTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(presentation.statusTitle, "40%")
+        XCTAssertEqual(presentation.statusTitle, "60")
         XCTAssertEqual(presentation.providerCards.map(\.id), ["claude"])
         XCTAssertEqual(presentation.agentRows.count, 1)
         XCTAssertTrue(presentation.agentRows[0].title.hasPrefix("Rocky"))
@@ -217,7 +217,10 @@ final class MenuPresentationTests: XCTestCase {
             preferences: ModelBarPreferences(hiddenAgentIDs: ["frank"])
         )
 
-        XCTAssertEqual(presentation.accessibilityLabel, "Highest model quota usage 40%, current")
+        XCTAssertEqual(
+            presentation.accessibilityLabel,
+            "Model quota left, current. OpenAI, Weekly, 60% left."
+        )
         XCTAssertEqual(presentation.footer, "Updated just now")
     }
 
@@ -244,6 +247,493 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertTrue(presentation.accessibilityLabel.contains("unavailable data"))
         XCTAssertTrue(presentation.providerRows.map(\.title).contains("⚠ Quota network error"))
         XCTAssertEqual(presentation.footer, "Partial data 1h ago")
+    }
+
+    func testStatusSegmentsFollowSnapshotOrderAndOnlyEnabledProviders() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let snapshot = ModelBarSnapshot(
+            providers: [
+                provider(id: "codex", name: "OpenAI", brand: .openAI, used: [4], now: now),
+                provider(id: "claude", name: "Claude", brand: .claude, used: [66], now: now),
+                provider(id: "grok", name: "Grok", brand: .grok, used: [1], now: now),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+
+        let all = MenuPresentationBuilder.build(snapshot: snapshot, now: now)
+        XCTAssertEqual(all.statusSegments.map(\.id), ["codex", "claude", "grok"])
+        XCTAssertEqual(all.statusSegments.map(\.displayName), ["OpenAI", "Claude", "Grok"])
+        XCTAssertEqual(all.statusSegments.map(\.brand), [.openAI, .claude, .grok])
+        XCTAssertEqual(all.statusSegments.map(\.valueText), ["96", "34", "99"])
+        XCTAssertEqual(all.statusTitle, "96 34 99")
+
+        let filtered = MenuPresentationBuilder.build(
+            snapshot: snapshot,
+            now: now,
+            preferences: ModelBarPreferences(disabledProviderIDs: ["claude"])
+        )
+        XCTAssertEqual(filtered.statusSegments.map(\.id), ["codex", "grok"])
+        XCTAssertEqual(filtered.statusTitle, "96 99")
+    }
+
+    func testStatusSegmentUsesTightestQuotaWindow() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let claude = ProviderSnapshot(
+            id: "claude",
+            displayName: "Claude",
+            brand: .claude,
+            quotaWindows: [
+                QuotaWindow(name: "5-hour", usedPercent: 66, resetsAt: nil),
+                QuotaWindow(name: "Weekly", usedPercent: 29, resetsAt: nil),
+                QuotaWindow(name: "Daily Routines", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(name: "Fable only", usedPercent: 0, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+
+        XCTAssertEqual(claude.tightestQuotaWindow?.name, "5-hour")
+
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [claude], agents: [], refreshedAt: now),
+            now: now
+        )
+        let segment = presentation.statusSegments[0]
+        XCTAssertEqual(segment.valueText, "34")
+        XCTAssertEqual(segment.windowName, "5-hour")
+        XCTAssertEqual(segment.remainingFraction ?? -1, 0.34, accuracy: 0.000_001)
+        XCTAssertEqual(segment.capacityState, .healthy)
+        XCTAssertFalse(segment.isStale)
+    }
+
+    func testTightestQuotaWindowTieKeepsFirstWindow() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let provider = ProviderSnapshot(
+            id: "codex",
+            displayName: "OpenAI",
+            quotaWindows: [
+                QuotaWindow(name: "Primary", usedPercent: 10, resetsAt: nil),
+                QuotaWindow(name: "Weekly", usedPercent: 70, resetsAt: nil),
+                QuotaWindow(name: "Monthly", usedPercent: 70, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+
+        XCTAssertEqual(provider.tightestQuotaWindow?.name, "Weekly")
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [provider], agents: [], refreshedAt: now),
+            now: now
+        )
+        XCTAssertEqual(presentation.statusSegments[0].windowName, "Weekly")
+    }
+
+    func testStatusSegmentRoundingMatchesCardLeftText() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let cases: [(used: Double, expected: String)] = [
+            (66.5, "34"),
+            (33.5, "66"),
+            (99.6, "0"),
+            (0.4, "100"),
+        ]
+        for testCase in cases {
+            let provider = provider(
+                id: "codex",
+                name: "OpenAI",
+                brand: .openAI,
+                used: [testCase.used],
+                now: now
+            )
+            let presentation = MenuPresentationBuilder.build(
+                snapshot: ModelBarSnapshot(providers: [provider], agents: [], refreshedAt: now),
+                now: now
+            )
+            let segment = presentation.statusSegments[0]
+            let card = presentation.providerCards[0].quotaBars[0]
+            XCTAssertEqual(
+                "\(segment.valueText)% left",
+                card.leftText,
+                "used \(testCase.used)"
+            )
+            XCTAssertEqual(segment.valueText, testCase.expected, "used \(testCase.used)")
+        }
+    }
+
+    func testStatusSegmentMatchesCardBarForTightestWindowWhenItIsNotFirst() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let provider = ProviderSnapshot(
+            id: "claude",
+            displayName: "Claude",
+            brand: .claude,
+            quotaWindows: [
+                QuotaWindow(name: "5-hour", usedPercent: 12.4, resetsAt: nil),
+                QuotaWindow(name: "Weekly", usedPercent: 81.5, resetsAt: nil),
+                QuotaWindow(name: "Opus", usedPercent: 40, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [provider], agents: [], refreshedAt: now),
+            now: now
+        )
+
+        let segment = presentation.statusSegments[0]
+        XCTAssertEqual(segment.windowName, "Weekly")
+        let card = presentation.providerCards[0].quotaBars.first { $0.name == segment.windowName }
+        XCTAssertNotNil(card)
+        XCTAssertEqual("\(segment.valueText)% left", card?.leftText)
+        XCTAssertEqual(segment.valueText, "18")
+        XCTAssertEqual(segment.capacityState, card?.capacityState)
+        XCTAssertEqual(segment.capacityState, .low)
+    }
+
+    func testStatusSegmentWithoutQuotaWindowsShowsPlaceholderNotZero() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "codex", name: "OpenAI", brand: .openAI, used: [50], now: now),
+                    provider(id: "grok", name: "Grok", brand: .grok, used: [], now: now),
+                ],
+                agents: [],
+                refreshedAt: now
+            ),
+            now: now
+        )
+
+        let segment = presentation.statusSegments[1]
+        XCTAssertEqual(segment.valueText, "\u{2013}")
+        XCTAssertNil(segment.windowName)
+        XCTAssertNil(segment.remainingFraction)
+        XCTAssertNil(segment.capacityState)
+        XCTAssertEqual(presentation.statusTitle, "50 \u{2013}")
+    }
+
+    func testStatusSegmentsMarkProviderAndSnapshotAgeStaleness() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var staleClaude = provider(id: "claude", name: "Claude", brand: .claude, used: [20], now: now)
+        staleClaude.isStale = true
+
+        let providerStale = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [staleClaude], agents: [], refreshedAt: now),
+            now: now
+        )
+        XCTAssertTrue(providerStale.statusSegments[0].isStale)
+
+        let fresh = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [provider(id: "codex", name: "OpenAI", brand: .openAI, used: [20], now: now)],
+                agents: [],
+                refreshedAt: now
+            ),
+            now: now
+        )
+        XCTAssertFalse(fresh.statusSegments[0].isStale)
+
+        let old = now.addingTimeInterval(-1_801)
+        let ageStale = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [provider(id: "codex", name: "OpenAI", brand: .openAI, used: [20], now: old)],
+                agents: [],
+                refreshedAt: old
+            ),
+            now: now
+        )
+        XCTAssertTrue(ageStale.statusSegments[0].isStale)
+        XCTAssertEqual(ageStale.statusSegments[0].valueText, "80")
+    }
+
+    func testMergedFailingProviderIsTheOnlyStaleSegment() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let previous = ModelBarSnapshot(
+            providers: [
+                provider(id: "codex", name: "OpenAI", brand: .openAI, used: [10], now: now),
+                provider(id: "claude", name: "Claude", brand: .claude, used: [77], now: now),
+                provider(id: "grok", name: "Grok", brand: .grok, used: [2], now: now),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+        let later = now.addingTimeInterval(900)
+        var failedClaude = provider(id: "claude", name: "Claude", brand: .claude, used: [], now: later)
+        failedClaude.issue = SourceIssue(kind: .network, message: "Quota network error")
+        let fresh = ModelBarSnapshot(
+            providers: [
+                provider(id: "codex", name: "OpenAI", brand: .openAI, used: [6], now: later),
+                failedClaude,
+                provider(id: "grok", name: "Grok", brand: .grok, used: [1], now: later),
+            ],
+            agents: [],
+            refreshedAt: later
+        )
+        let merged = SnapshotMerger.merge(fresh: fresh, previous: previous)
+
+        let presentation = MenuPresentationBuilder.build(snapshot: merged, now: later)
+
+        XCTAssertEqual(presentation.statusSegments.map(\.id), ["codex", "claude", "grok"])
+        XCTAssertEqual(presentation.statusSegments.map(\.isStale), [false, true, false])
+        XCTAssertEqual(presentation.statusSegments.map(\.valueText), ["94", "23", "99"])
+        XCTAssertEqual(presentation.statusTitle, "94 23 99")
+        let toolTipLines = presentation.statusToolTip.components(separatedBy: "\n")
+        XCTAssertEqual(toolTipLines[0], "OpenAI · Primary · 94% left")
+        XCTAssertEqual(toolTipLines[1], "Claude · Primary · 23% left · stale")
+        XCTAssertEqual(toolTipLines[2], "Grok · Primary · 99% left")
+        XCTAssertTrue(presentation.accessibilityLabel.contains("OpenAI, Primary, 94% left."))
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Claude, Primary, 23% left, stale."))
+        XCTAssertTrue(presentation.accessibilityLabel.contains("Grok, Primary, 99% left."))
+    }
+
+    func testStaleAgentDoesNotDimProviderSegments() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var staleAgent = agent(id: "rocky", name: "Rocky", now: now)
+        staleAgent.isStale = true
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "codex", name: "OpenAI", brand: .openAI, used: [20], now: now),
+                    provider(id: "claude", name: "Claude", brand: .claude, used: [30], now: now),
+                ],
+                agents: [staleAgent],
+                refreshedAt: now
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.statusSegments.map(\.isStale), [false, false])
+        XCTAssertFalse(presentation.statusToolTip.contains("stale"))
+    }
+
+    func testOldSnapshotMarksEverySegmentStale() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = now.addingTimeInterval(-1_801)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "codex", name: "OpenAI", brand: .openAI, used: [20], now: old),
+                    provider(id: "claude", name: "Claude", brand: .claude, used: [30], now: old),
+                    provider(id: "grok", name: "Grok", brand: .grok, used: [], now: old),
+                ],
+                agents: [],
+                refreshedAt: old
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.statusSegments.map(\.isStale), [true, true, true])
+    }
+
+    func testCapacityThresholdsAreSharedByCardsAndStatusSegments() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let cases: [(remaining: Double, state: QuotaCapacityState)] = [
+            (21, .healthy),
+            (20, .low),
+            (11, .low),
+            (10, .critical),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(
+                QuotaCapacityState(remainingPercent: testCase.remaining),
+                testCase.state
+            )
+            let presentation = MenuPresentationBuilder.build(
+                snapshot: ModelBarSnapshot(
+                    providers: [
+                        provider(
+                            id: "codex",
+                            name: "OpenAI",
+                            brand: .openAI,
+                            used: [100 - testCase.remaining],
+                            now: now
+                        ),
+                    ],
+                    agents: [],
+                    refreshedAt: now
+                ),
+                now: now
+            )
+            XCTAssertEqual(presentation.statusSegments[0].capacityState, testCase.state)
+            XCTAssertEqual(presentation.providerCards[0].quotaBars[0].capacityState, testCase.state)
+        }
+    }
+
+    func testStatusTitleFallsBackToQuestionMarkWhenEnabledProvidersAreNotYetFetched() {
+        // Only Grok was enabled at the last refresh; Settings then enabled
+        // Claude and disabled Grok, and the old snapshot renders first.
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "grok", name: "Grok", brand: .grok, used: [50], now: now),
+                ],
+                agents: [],
+                refreshedAt: now
+            ),
+            now: now,
+            preferences: ModelBarPreferences(disabledProviderIDs: ["codex", "grok"]),
+            calendar: fixedCalendar
+        )
+
+        XCTAssertTrue(presentation.statusSegments.isEmpty)
+        XCTAssertEqual(presentation.statusTitle, "?")
+        XCTAssertEqual(presentation.statusToolTip, "Waiting for provider data\nUpdated 03:33")
+        XCTAssertEqual(
+            presentation.accessibilityLabel,
+            "Model quota left, current. Waiting for provider data."
+        )
+    }
+
+    func testStatusToolTipListsEveryProviderAndFooter() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let codex = ProviderSnapshot(
+            id: "codex",
+            displayName: "OpenAI",
+            brand: .openAI,
+            quotaWindows: [
+                QuotaWindow(name: "Weekly", usedPercent: 50, resetsAt: now.addingTimeInterval(86_400)),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+        let claude = provider(id: "claude", name: "Claude", brand: .claude, used: [66], now: now)
+        let grok = provider(id: "grok", name: "Grok", brand: .grok, used: [], now: now)
+
+        let fresh = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [codex, claude, grok], agents: [], refreshedAt: now),
+            now: now,
+            calendar: fixedCalendar
+        )
+        XCTAssertEqual(
+            fresh.statusToolTip,
+            [
+                "OpenAI · Weekly · 50% left · resets Thu 03:33",
+                "Claude · Primary · 34% left",
+                "Grok · Quota unavailable",
+                "Updated 03:33",
+            ].joined(separator: "\n")
+        )
+
+        let old = now.addingTimeInterval(-3_600)
+        var staleCodex = codex
+        staleCodex.fetchedAt = old
+        var staleGrok = grok
+        staleGrok.fetchedAt = old
+        let stale = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [staleCodex, staleGrok], agents: [], refreshedAt: old),
+            now: now,
+            calendar: fixedCalendar
+        )
+        XCTAssertEqual(
+            stale.statusToolTip,
+            [
+                "OpenAI · Weekly · 50% left · resets Thu 03:33 · stale",
+                "Grok · Quota unavailable · stale",
+                "Stale data from 02:33",
+            ].joined(separator: "\n")
+        )
+    }
+
+    func testToolTipTimesAreAbsoluteSoTheyStayTrueAfterRender() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(
+            DisplayFormatting.resetClock(now.addingTimeInterval(1_200), now: now, calendar: fixedCalendar),
+            "resets 03:53"
+        )
+        XCTAssertEqual(
+            DisplayFormatting.resetClock(now.addingTimeInterval(8 * 86_400), now: now, calendar: fixedCalendar),
+            "resets 26 May at 03:33"
+        )
+        XCTAssertEqual(
+            DisplayFormatting.resetClock(now.addingTimeInterval(-60), now: now, calendar: fixedCalendar),
+            "reset due"
+        )
+        XCTAssertEqual(DisplayFormatting.resetClock(nil, now: now, calendar: fixedCalendar), "reset unknown")
+    }
+
+    func testAccessibilityLabelNamesEveryProviderWindowPercentAndState() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let snapshot = ModelBarSnapshot(
+            providers: [
+                provider(id: "codex", name: "OpenAI", brand: .openAI, used: [94], now: now),
+                provider(id: "claude", name: "Claude", brand: .claude, used: [82], now: now),
+                provider(id: "grok", name: "Grok", brand: .grok, used: [], now: now),
+                provider(id: "future", name: "Future", brand: nil, used: [30], now: now),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+
+        let current = MenuPresentationBuilder.build(snapshot: snapshot, now: now)
+        XCTAssertEqual(
+            current.accessibilityLabel,
+            "Model quota left, current. OpenAI, Primary, 6% left, critical. " +
+                "Claude, Primary, 18% left, low. Grok, quota unavailable. " +
+                "Future, Primary, 70% left."
+        )
+
+        let old = now.addingTimeInterval(-3_600)
+        var staleSnapshot = snapshot
+        staleSnapshot.refreshedAt = old
+        let stale = MenuPresentationBuilder.build(snapshot: staleSnapshot, now: now)
+        XCTAssertEqual(
+            stale.accessibilityLabel,
+            "Model quota left, stale. OpenAI, Primary, 6% left, critical, stale. " +
+                "Claude, Primary, 18% left, low, stale. Grok, quota unavailable, stale. " +
+                "Future, Primary, 70% left, stale."
+        )
+
+        var partialSnapshot = snapshot
+        partialSnapshot.providers[2].issue = SourceIssue(kind: .network, message: "Quota network error")
+        let partial = MenuPresentationBuilder.build(snapshot: partialSnapshot, now: now)
+        XCTAssertTrue(
+            partial.accessibilityLabel.hasPrefix("Model quota left, with unavailable data. OpenAI")
+        )
+
+        let none = MenuPresentationBuilder.build(
+            snapshot: snapshot,
+            now: now,
+            preferences: ModelBarPreferences(
+                disabledProviderIDs: ["codex", "claude", "grok", "future"]
+            )
+        )
+        XCTAssertEqual(none.accessibilityLabel, "Model quota left, current. Waiting for provider data.")
+    }
+
+    private var fixedCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        calendar.locale = Locale(identifier: "en_GB")
+        return calendar
+    }
+
+    private func provider(
+        id: String,
+        name: String,
+        brand: ProviderBrand?,
+        used: [Double],
+        now: Date
+    ) -> ProviderSnapshot {
+        ProviderSnapshot(
+            id: id,
+            displayName: name,
+            brand: brand,
+            quotaWindows: used.map {
+                QuotaWindow(name: "Primary", usedPercent: $0, resetsAt: nil)
+            },
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
     }
 
     private func agent(id: String, name: String, now: Date) -> AgentTokenSnapshot {

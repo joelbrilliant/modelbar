@@ -22,4 +22,20 @@ enum ProviderBrandStyle {
             )
         }
     }
+
+    /// Fill colour for remaining capacity, shared by menu cards and the
+    /// status item so low and critical always look the same.
+    static func capacityColour(
+        for state: QuotaCapacityState,
+        brand: ProviderBrand?
+    ) -> NSColor {
+        switch state {
+        case .healthy:
+            return colour(for: brand)
+        case .low:
+            return .systemOrange
+        case .critical:
+            return .systemRed
+        }
+    }
 }
