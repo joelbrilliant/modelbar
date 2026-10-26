@@ -708,6 +708,260 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(none.accessibilityLabel, "Model quota left, current. Waiting for provider data.")
     }
 
+    // MARK: - One-line quota rows (V1.3)
+
+    func testCountdownFormatsBoundaries() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let dash = "\u{2013}"
+        let hour: TimeInterval = 3_600
+        let day: TimeInterval = 86_400
+        let cases: [(seconds: TimeInterval?, expected: String)] = [
+            (nil, dash),
+            (-60, "due"),
+            (0, "due"),
+            (59, "1m"),
+            (60, "1m"),
+            (3_540, "59m"),
+            (3_599, "59m"),
+            (hour, "1h 0m"),
+            (3 * hour + 2_640, "3h 44m"),
+            (day - 1, "23h 59m"),
+            (day, "1d 0h"),
+            (3 * day + 13 * hour + 3_240, "3d 13h"),
+        ]
+        for testCase in cases {
+            let date = testCase.seconds.map { now.addingTimeInterval($0) }
+            XCTAssertEqual(
+                DisplayFormatting.countdown(date, now: now),
+                testCase.expected,
+                "seconds \(String(describing: testCase.seconds))"
+            )
+        }
+    }
+
+    func testQuotaBarCarriesCountdownAndAccessibilityText() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let known = QuotaBarPresentation(
+            window: QuotaWindow(
+                name: "5-hour",
+                usedPercent: 18,
+                resetsAt: now.addingTimeInterval(3 * 3_600 + 44 * 60)
+            ),
+            now: now
+        )
+        XCTAssertEqual(known.countdownText, "3h 44m")
+        XCTAssertEqual(known.leftText, "82% left")
+        XCTAssertEqual(known.accessibilityText, "5-hour, 82% left, resets in 3h 44m")
+
+        let unknown = QuotaBarPresentation(
+            window: QuotaWindow(name: "Weekly", usedPercent: 18, resetsAt: nil),
+            now: now
+        )
+        XCTAssertEqual(unknown.countdownText, "\u{2013}")
+        XCTAssertEqual(unknown.accessibilityText, "Weekly, 82% left, reset time unknown")
+
+        let due = QuotaBarPresentation(
+            window: QuotaWindow(
+                name: "Weekly",
+                usedPercent: 18,
+                resetsAt: now.addingTimeInterval(-5)
+            ),
+            now: now
+        )
+        XCTAssertEqual(due.countdownText, "due")
+        XCTAssertEqual(due.accessibilityText, "Weekly, 82% left, reset due")
+    }
+
+    func testUnusedWindowsAreHiddenFromCardsAndLegacyRows() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let claude = ProviderSnapshot(
+            id: "claude",
+            displayName: "Claude",
+            brand: .claude,
+            quotaWindows: [
+                QuotaWindow(name: "5-hour", usedPercent: 66, resetsAt: nil),
+                QuotaWindow(name: "Daily Routines", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(
+                    name: "Weekly",
+                    usedPercent: 0,
+                    resetsAt: now.addingTimeInterval(86_400)
+                ),
+                QuotaWindow(name: "Fable only", usedPercent: 0, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+        XCTAssertTrue(claude.quotaWindows[1].isUnused)
+        XCTAssertFalse(claude.quotaWindows[0].isUnused)
+        XCTAssertFalse(claude.quotaWindows[2].isUnused)
+
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [claude], agents: [], refreshedAt: now),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.providerCards[0].quotaBars.map(\.name), ["5-hour", "Weekly"])
+        let rowTitles = presentation.providerRows.map(\.title)
+        XCTAssertTrue(rowTitles.contains { $0.hasPrefix("5-hour:") })
+        XCTAssertTrue(rowTitles.contains { $0.hasPrefix("Weekly:") })
+        XCTAssertFalse(rowTitles.contains { $0.hasPrefix("Daily Routines:") })
+        XCTAssertFalse(rowTitles.contains { $0.hasPrefix("Fable only:") })
+    }
+
+    func testEveryWindowUnusedKeepsAllWindowsInsteadOfAnEmptyCard() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let grok = ProviderSnapshot(
+            id: "grok",
+            displayName: "Grok",
+            brand: .grok,
+            quotaWindows: [
+                QuotaWindow(name: "Daily", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(name: "Monthly", usedPercent: 0, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [grok], agents: [], refreshedAt: now),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.providerCards[0].quotaBars.map(\.name), ["Daily", "Monthly"])
+        XCTAssertEqual(presentation.providerCards[0].quotaBars.map(\.leftText), ["100% left", "100% left"])
+        let rowTitles = presentation.providerRows.map(\.title)
+        XCTAssertTrue(rowTitles.contains { $0.hasPrefix("Daily:") })
+        XCTAssertTrue(rowTitles.contains { $0.hasPrefix("Monthly:") })
+    }
+
+    func testProviderWithNoWindowsStillHasAnEmptyBarList() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [provider(id: "grok", name: "Grok", brand: .grok, used: [], now: now)],
+                agents: [],
+                refreshedAt: now
+            ),
+            now: now
+        )
+        XCTAssertTrue(presentation.providerCards[0].quotaBars.isEmpty)
+    }
+
+    func testStatusSegmentIgnoresUnusedWindows() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let claude = ProviderSnapshot(
+            id: "claude",
+            displayName: "Claude",
+            brand: .claude,
+            quotaWindows: [
+                QuotaWindow(name: "Daily Routines", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(name: "5-hour", usedPercent: 40, resetsAt: nil),
+                QuotaWindow(name: "Fable only", usedPercent: 0, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [claude], agents: [], refreshedAt: now),
+            now: now
+        )
+
+        XCTAssertEqual(claude.tightestQuotaWindow?.name, "5-hour")
+        XCTAssertEqual(presentation.statusSegments[0].windowName, "5-hour")
+        XCTAssertEqual(presentation.statusSegments[0].valueText, "60")
+        XCTAssertEqual(presentation.providerCards[0].quotaBars.map(\.name), ["5-hour"])
+    }
+
+    func testCardStalenessIsPerProviderNotGlobal() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var staleClaude = provider(id: "claude", name: "Claude", brand: .claude, used: [20], now: now)
+        staleClaude.isStale = true
+        var staleAgent = agent(id: "rocky", name: "Rocky", now: now)
+        staleAgent.isStale = true
+        let snapshot = ModelBarSnapshot(
+            providers: [
+                provider(id: "codex", name: "OpenAI", brand: .openAI, used: [10], now: now),
+                staleClaude,
+            ],
+            agents: [staleAgent],
+            refreshedAt: now
+        )
+
+        let presentation = MenuPresentationBuilder.build(snapshot: snapshot, now: now)
+
+        XCTAssertEqual(presentation.providerCards.map(\.isStale), [false, true])
+        XCTAssertTrue(presentation.providerCards[0].ageText.hasPrefix("Updated"))
+        XCTAssertTrue(presentation.providerCards[1].ageText.hasPrefix("Stale"))
+        XCTAssertFalse(presentation.providerRows.map(\.title).first { $0.hasPrefix("OpenAI") }!.hasSuffix("stale"))
+        XCTAssertTrue(presentation.providerRows.map(\.title).first { $0.hasPrefix("Claude") }!.hasSuffix("stale"))
+        // The footer and overall state keep the global rule.
+        XCTAssertTrue(presentation.footer.hasPrefix("Stale data"))
+        XCTAssertTrue(presentation.accessibilityLabel.hasPrefix("Model quota left, stale."))
+    }
+
+    func testStaleHermesAgentAloneDoesNotMarkAnyProviderCardStale() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        var staleAgent = agent(id: "rocky", name: "Rocky", now: now)
+        staleAgent.isStale = true
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "codex", name: "OpenAI", brand: .openAI, used: [10], now: now),
+                ],
+                agents: [staleAgent],
+                refreshedAt: now
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.providerCards.map(\.isStale), [false])
+        XCTAssertTrue(presentation.providerCards[0].ageText.hasPrefix("Updated"))
+    }
+
+    func testOldSnapshotMarksEveryCardStale() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let old = now.addingTimeInterval(-7_200)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [
+                    provider(id: "codex", name: "OpenAI", brand: .openAI, used: [10], now: old),
+                    provider(id: "claude", name: "Claude", brand: .claude, used: [30], now: old),
+                ],
+                agents: [],
+                refreshedAt: old
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.providerCards.map(\.isStale), [true, true])
+        XCTAssertEqual(presentation.providerCards[0].ageText, "Stale 2h ago")
+        XCTAssertTrue(presentation.providerRows.map(\.title).allSatisfy {
+            !$0.hasPrefix("OpenAI") || $0.hasSuffix("stale")
+        })
+    }
+
+    func testMissingServiceStatusReadsStatusUnknownOnTheCard() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(
+                providers: [provider(id: "grok", name: "Grok", brand: .grok, used: [5], now: now)],
+                agents: [],
+                refreshedAt: now
+            ),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.providerCards[0].statusText, "Status unknown")
+        XCTAssertEqual(presentation.providerCards[0].statusCondition, .unknown)
+    }
+
     private var fixedCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!

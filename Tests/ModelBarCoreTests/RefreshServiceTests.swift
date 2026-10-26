@@ -46,7 +46,7 @@ final class RefreshServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.providers[0].displayName, "Future")
         XCTAssertEqual(snapshot.providers[0].brand, brand)
         XCTAssertEqual(presentation.providerCards[0].brand, brand)
-        XCTAssertEqual(presentation.providerCards[0].statusText, "Service status unknown")
+        XCTAssertEqual(presentation.providerCards[0].statusText, "Status unknown")
     }
 
     func testRegistryRestoresBrandToLegacyCachedSnapshot() {
@@ -159,6 +159,202 @@ final class RefreshServiceTests: XCTestCase {
         XCTAssertEqual(merged.providers[0].tokens, previousProvider.tokens)
         XCTAssertEqual(merged.providers[0].serviceStatus, previousProvider.serviceStatus)
         XCTAssertTrue(merged.providers[0].isStale)
+    }
+
+    func testRepeatedFailuresKeepTheCachedQuotaAge() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let quota = [QuotaWindow(name: "Weekly", usedPercent: 50, resetsAt: nil)]
+        func failed(at date: Date) -> ModelBarSnapshot {
+            ModelBarSnapshot(
+                providers: [
+                    ProviderSnapshot(
+                        id: "codex",
+                        displayName: "OpenAI",
+                        quotaWindows: [],
+                        tokens: nil,
+                        serviceStatus: nil,
+                        issue: SourceIssue(kind: .timeout, message: "Quota refresh timed out"),
+                        fetchedAt: date
+                    ),
+                ],
+                agents: [],
+                refreshedAt: date
+            )
+        }
+        let good = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "codex",
+                    displayName: "OpenAI",
+                    quotaWindows: quota,
+                    tokens: nil,
+                    serviceStatus: nil,
+                    issue: nil,
+                    fetchedAt: start
+                ),
+            ],
+            agents: [],
+            refreshedAt: start
+        )
+
+        let firstFailure = SnapshotMerger.merge(
+            fresh: failed(at: start.addingTimeInterval(3_600)),
+            previous: good
+        )
+        let now = start.addingTimeInterval(7_200)
+        let secondFailure = SnapshotMerger.merge(fresh: failed(at: now), previous: firstFailure)
+
+        XCTAssertEqual(secondFailure.providers[0].fetchedAt, start)
+        XCTAssertTrue(secondFailure.providers[0].isStale)
+        let card = MenuPresentationBuilder.build(snapshot: secondFailure, now: now).providerCards[0]
+        XCTAssertEqual(card.ageText, "Stale 2h ago")
+    }
+
+    func testTokenOnlyIssueWithFreshQuotaIsNotStaleAndBackfillsTokens() {
+        let now = Date()
+        let cachedTokens = TokenUsage(recentTokens: 10, sevenDayTokens: 20, recentLabel: "today")
+        let cachedStatus = ServiceStatus(condition: .operational, description: "Operational", url: nil)
+        let previous = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "claude",
+                    displayName: "Claude",
+                    quotaWindows: [QuotaWindow(name: "5-hour", usedPercent: 10, resetsAt: nil)],
+                    tokens: cachedTokens,
+                    serviceStatus: cachedStatus,
+                    issue: nil,
+                    fetchedAt: now
+                ),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+        let freshWindows = [QuotaWindow(name: "5-hour", usedPercent: 66, resetsAt: nil)]
+        let fresh = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "claude",
+                    displayName: "Claude",
+                    quotaWindows: freshWindows,
+                    tokens: nil,
+                    serviceStatus: nil,
+                    issue: SourceIssue(kind: .timeout, message: "Token history refresh timed out"),
+                    fetchedAt: now.addingTimeInterval(60)
+                ),
+            ],
+            agents: [],
+            refreshedAt: now.addingTimeInterval(60)
+        )
+
+        let merged = SnapshotMerger.merge(fresh: fresh, previous: previous).providers[0]
+
+        XCTAssertEqual(merged.quotaWindows, freshWindows)
+        XCTAssertEqual(merged.tokens, cachedTokens)
+        XCTAssertEqual(merged.serviceStatus, cachedStatus)
+        XCTAssertEqual(merged.issue?.message, "Token history refresh timed out")
+        XCTAssertFalse(merged.isStale)
+    }
+
+    func testIssueWithoutCachedQuotaIsNotStale() {
+        let now = Date()
+        let previous = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "grok",
+                    displayName: "Grok",
+                    quotaWindows: [],
+                    tokens: TokenUsage(recentTokens: 1, sevenDayTokens: 2, recentLabel: "today"),
+                    serviceStatus: nil,
+                    issue: nil,
+                    fetchedAt: now
+                ),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+        let fresh = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "grok",
+                    displayName: "Grok",
+                    quotaWindows: [],
+                    tokens: nil,
+                    serviceStatus: nil,
+                    issue: SourceIssue(kind: .network, message: "Quota network error"),
+                    fetchedAt: now.addingTimeInterval(60)
+                ),
+            ],
+            agents: [],
+            refreshedAt: now.addingTimeInterval(60)
+        )
+
+        let merged = SnapshotMerger.merge(fresh: fresh, previous: previous).providers[0]
+
+        XCTAssertTrue(merged.quotaWindows.isEmpty)
+        XCTAssertFalse(merged.isStale)
+    }
+
+    func testIssueWithNoPreviousSnapshotIsNotStale() {
+        let now = Date()
+        let fresh = ModelBarSnapshot(
+            providers: [
+                ProviderSnapshot(
+                    id: "codex",
+                    displayName: "OpenAI",
+                    quotaWindows: [],
+                    tokens: nil,
+                    serviceStatus: nil,
+                    issue: SourceIssue(kind: .timeout, message: "Quota refresh timed out"),
+                    fetchedAt: now
+                ),
+            ],
+            agents: [],
+            refreshedAt: now
+        )
+
+        XCTAssertFalse(SnapshotMerger.merge(fresh: fresh, previous: nil).providers[0].isStale)
+        XCTAssertFalse(
+            SnapshotMerger.merge(
+                fresh: fresh,
+                previous: ModelBarSnapshot(providers: [], agents: [], refreshedAt: now)
+            ).providers[0].isStale
+        )
+    }
+
+    func testAgentWithIssueAndCachedTokensStaysStale() {
+        let now = Date()
+        let cachedTokens = TokenUsage(recentTokens: 5, sevenDayTokens: 50, recentLabel: "24h")
+        func agent(tokens: TokenUsage?, issue: SourceIssue?, at date: Date) -> AgentTokenSnapshot {
+            AgentTokenSnapshot(
+                id: "rocky",
+                displayName: "Rocky",
+                tokens: tokens,
+                issue: issue,
+                usesLegacySchema: false,
+                fetchedAt: date
+            )
+        }
+        let previous = ModelBarSnapshot(
+            providers: [],
+            agents: [agent(tokens: cachedTokens, issue: nil, at: now)],
+            refreshedAt: now
+        )
+        let fresh = ModelBarSnapshot(
+            providers: [],
+            agents: [
+                agent(
+                    tokens: nil,
+                    issue: SourceIssue(kind: .unavailable, message: "Database busy"),
+                    at: now.addingTimeInterval(60)
+                ),
+            ],
+            refreshedAt: now.addingTimeInterval(60)
+        )
+
+        let merged = SnapshotMerger.merge(fresh: fresh, previous: previous).agents[0]
+
+        XCTAssertEqual(merged.tokens, cachedTokens)
+        XCTAssertTrue(merged.isStale)
     }
 
     func testConcurrentRefreshTriggersShareOneProviderBatch() async {
