@@ -277,7 +277,7 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(filtered.statusTitle, "96 99")
     }
 
-    func testStatusSegmentUsesTightestQuotaWindow() {
+    func testStatusSegmentPrefersWeeklyQuotaWindow() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let claude = ProviderSnapshot(
             id: "claude",
@@ -296,17 +296,47 @@ final class MenuPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(claude.tightestQuotaWindow?.name, "5-hour")
+        XCTAssertEqual(claude.statusQuotaWindow?.name, "Weekly")
 
         let presentation = MenuPresentationBuilder.build(
             snapshot: ModelBarSnapshot(providers: [claude], agents: [], refreshedAt: now),
             now: now
         )
         let segment = presentation.statusSegments[0]
-        XCTAssertEqual(segment.valueText, "34")
-        XCTAssertEqual(segment.windowName, "5-hour")
-        XCTAssertEqual(segment.remainingFraction ?? -1, 0.34, accuracy: 0.000_001)
+        XCTAssertEqual(segment.valueText, "71")
+        XCTAssertEqual(segment.windowName, "Weekly")
+        XCTAssertEqual(segment.remainingFraction ?? -1, 0.71, accuracy: 0.000_001)
         XCTAssertEqual(segment.capacityState, .healthy)
         XCTAssertFalse(segment.isStale)
+        XCTAssertEqual(
+            presentation.statusToolTip.components(separatedBy: "\n")[0],
+            "Claude · Weekly · 71% left"
+        )
+    }
+
+    func testStatusSegmentFallsBackToTightestWithoutWeeklyWindow() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let grok = ProviderSnapshot(
+            id: "grok",
+            displayName: "Grok",
+            brand: .grok,
+            quotaWindows: [
+                QuotaWindow(name: "Quota", usedPercent: 5, resetsAt: nil),
+                QuotaWindow(name: "Secondary", usedPercent: 60, resetsAt: nil),
+            ],
+            tokens: nil,
+            serviceStatus: nil,
+            issue: nil,
+            fetchedAt: now
+        )
+
+        XCTAssertEqual(grok.statusQuotaWindow?.name, "Secondary")
+        let presentation = MenuPresentationBuilder.build(
+            snapshot: ModelBarSnapshot(providers: [grok], agents: [], refreshedAt: now),
+            now: now
+        )
+        XCTAssertEqual(presentation.statusSegments[0].windowName, "Secondary")
+        XCTAssertEqual(presentation.statusSegments[0].valueText, "40")
     }
 
     func testTightestQuotaWindowTieKeepsFirstWindow() {

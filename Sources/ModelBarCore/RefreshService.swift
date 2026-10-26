@@ -40,7 +40,7 @@ public struct ProviderRegistry: Sendable {
                 brand: .openAI,
                 cliProviderName: "codex",
                 primaryWindowName: "Primary",
-                secondaryWindowName: "Weekly"
+                secondaryWindowName: QuotaWindow.weeklyName
             ),
             executable: codexBarExecutable,
             tokenReader: CodexBarCostTokenReader(
@@ -55,7 +55,7 @@ public struct ProviderRegistry: Sendable {
                 brand: .claude,
                 cliProviderName: "claude",
                 primaryWindowName: "5-hour",
-                secondaryWindowName: "Weekly"
+                secondaryWindowName: QuotaWindow.weeklyName
             ),
             executable: codexBarExecutable,
             tokenReader: CodexBarCostTokenReader(
