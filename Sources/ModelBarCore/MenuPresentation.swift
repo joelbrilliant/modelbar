@@ -50,7 +50,7 @@ public enum QuotaCapacityState: Equatable, Sendable {
     }
 }
 
-/// One provider's segment in the closed status item: its tightest quota
+/// One provider's segment in the closed status item: its status quota
 /// window expressed as percentage left.
 public struct StatusSegmentPresentation: Equatable, Sendable {
     public static let unavailableText = "\u{2013}"
@@ -217,7 +217,7 @@ public enum MenuPresentationBuilder {
         provider: ProviderSnapshot,
         snapshotAgeIsStale: Bool
     ) -> StatusSegmentPresentation {
-        let window = provider.tightestQuotaWindow
+        let window = provider.statusQuotaWindow
         return StatusSegmentPresentation(
             id: provider.id,
             displayName: provider.displayName,
@@ -255,7 +255,7 @@ public enum MenuPresentationBuilder {
     ) -> String {
         var lines = zip(providers, segments).map { provider, segment in
             var parts = [segment.displayName]
-            if let window = provider.tightestQuotaWindow {
+            if let window = provider.statusQuotaWindow {
                 parts.append(window.name)
                 parts.append("\(DisplayFormatting.percent(window.remainingPercent)) left")
                 if window.resetsAt != nil {

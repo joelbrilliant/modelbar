@@ -20,6 +20,8 @@ public struct SourceIssue: Codable, Equatable, Sendable {
 }
 
 public struct QuotaWindow: Codable, Equatable, Sendable {
+    public static let weeklyName = "Weekly"
+
     public let name: String
     public let usedPercent: Double
     public let resetsAt: Date?
@@ -190,6 +192,12 @@ public struct ProviderSnapshot: Codable, Equatable, Sendable {
             }
             return tightest
         }
+    }
+
+    /// The window the closed status item shows: the weekly window when the
+    /// provider has one, otherwise the tightest window.
+    public var statusQuotaWindow: QuotaWindow? {
+        quotaWindows.first { $0.name == QuotaWindow.weeklyName } ?? tightestQuotaWindow
     }
 }
 
