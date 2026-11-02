@@ -25,7 +25,19 @@ The built-in adapters look for `codexbar` at `/opt/homebrew/bin/codexbar` or `/u
 
 Hermes is optional. If no live Hermes profile databases exist, ModelBar continues to show provider data.
 
-## Build and install
+## Install
+
+Download `ModelBar-macos-arm64.zip` from the [latest release](https://github.com/joelbrilliant/modelbar/releases/latest), for Apple silicon Macs, then:
+
+```sh
+ditto -x -k ModelBar-macos-arm64.zip /Applications
+xattr -dr com.apple.quarantine /Applications/ModelBar.app
+open /Applications/ModelBar.app
+```
+
+The release is ad-hoc signed and isn't notarised, so macOS would otherwise refuse to open it. The `xattr` line removes the download's quarantine flag. Only run it if you trust the download. Each release lists the zip's SHA-256. To avoid this, build it yourself.
+
+## Build from source
 
 ```sh
 swift test
@@ -60,4 +72,4 @@ See [Adding a provider](Documentation/ADDING_A_PROVIDER.md) and the copy-ready [
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports should follow [SECURITY.md](SECURITY.md).
 
-ModelBar is available under the [MIT License](LICENSE).
+ModelBar was built by Joel Brilliant, and is available under the [MIT License](LICENSE).
